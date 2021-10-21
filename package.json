@@ -1,0 +1,17 @@
+{
+  "name": "freepbx-graphql-client",
+  "version": "1.0.0",
+  "description": "A GraphQL Client for FreePBX",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Matt Brooks",
+  "license": "ISC",
+  "dependencies": {
+    "graphql": "^15.6.1",
+    "graphql-request": "^3.6.1",
+    "polly-js": "^1.8.2"
+  }
+}
