@@ -3,7 +3,7 @@ const { GraphQLClient, gql } = require("graphql-request");
 
 const defaultOptions = {
   debug: false,
-  retry: 3,
+  retry: 5,
   retryDelay: 1000,
 };
 
@@ -43,9 +43,9 @@ class FreepbxGqlClient {
     this.#options = { ...defaultOptions, ...options };
   }
 
-  logError(message, err) {
+  logDebug(...args) {
     if (this.#options.debug) {
-      console.error(message, err);
+      console.log(...args);
     }
   }
 
@@ -76,7 +76,7 @@ class FreepbxGqlClient {
     }).catch(async (err) => {
       // retry request on network error
       if (retries > 0 && this.retryNetworkError(err)) {
-        this.logError("Caught GraphQL Error, Retrying:", err);
+        this.logDebug("Caught GraphQL Error, Retrying:", err);
         await delay(retryDelay);
         return this.authenticateRequestWithRetry(retries - 1, retryDelay * 2);
       }
@@ -120,14 +120,14 @@ class FreepbxGqlClient {
     return this.#gqlClient.request(...args).catch(async (err) => {
       // retry request on network error
       if (retries > 0 && this.retryNetworkError(err)) {
-        this.logError("Caught GraphQL Error, Retrying:", err);
+        this.logDebug("Caught GraphQL Error, Retrying:", err);
         await delay(retryDelay);
         return this.requestWithRetry(retries - 1, retryDelay * 2, ...args);
       }
 
       // If access denied, try to reauthenticate immediately. Do not add any delay
       if (retries > 0 && err.response && err.response.status === 401) {
-        this.logError("Caught GraphQL Error, Retrying:", err);
+        this.logDebug("Caught GraphQL Error, Retrying:", err);
         this.#gqlAccessToken = null;
         this.#gqlClient = null;
         return this.requestWithRetry(retries - 1, retryDelay, ...args);
@@ -141,6 +141,97 @@ class FreepbxGqlClient {
     const retries = this.#options.retry;
     const retryDelay = this.#options.retryDelay;
     return this.requestWithRetry(retries, retryDelay, ...args);
+  }
+
+  async fetchTransactionStatus(transactionId) {
+    const query = gql`
+      query FetchApiStatus($transactionId: ID!) {
+        fetchApiStatus(txnId: $transactionId) {
+          status
+          message
+        }
+      }
+    `;
+
+    const variables = {
+      transactionId,
+    };
+
+    return this.request(query, variables);
+  }
+
+  async waitForTransactionSuccess(
+    transactionId,
+    retries = 300,
+    retryDelay = 1000
+  ) {
+    this.logDebug(`Waiting for transaction ${transactionId} to completed`);
+
+    const data = await this.fetchTransactionStatus(transactionId);
+
+    // If a corrupted response is received, let's just Fetch the API Status again and pretend this didn't happen
+    if (!data || !data.fetchApiStatus) {
+      this.logDebug("Received Invalid Response", { data });
+      await delay(retryDelay);
+      return this.waitForTransactionSuccess(
+        transactionId,
+        retries - 1,
+        retryDelay
+      );
+    }
+
+    // Transaction completed successfully, return the result
+    if (
+      data.fetchApiStatus.status === true &&
+      data.fetchApiStatus.message === "Executed"
+    ) {
+      return data;
+    }
+
+    // Transaction is still processing, wait for the transaction to complete
+    if (
+      retries > 0 &&
+      data.fetchApiStatus.status === true &&
+      data.fetchApiStatus.message === "Processing"
+    ) {
+      await delay(retryDelay);
+      return this.waitForTransactionSuccess(
+        transactionId,
+        retries - 1,
+        retryDelay
+      );
+    }
+
+    // Transaction failed, throw an error
+    if (
+      data.fetchApiStatus.status === false ||
+      data.fetchApiStatus.message !== "Processing"
+    ) {
+      const err = new Error("Transaction failed");
+      err.results = data;
+      throw err;
+    }
+
+    // Transaction timeout waiting on a response
+    const err = new Error("Timeout waiting on transaction to complete");
+    err.results = data;
+    throw err;
+  }
+
+  async requestTransactionAndWait(
+    query,
+    variables,
+    retries = 300,
+    retryDelay = 10000
+  ) {
+    return this.request(query, variables).then((queryResponse) => {
+      const transStartObj = queryResponse[Object.keys(queryResponse)[0]];
+      return this.waitForTransactionSuccess(
+        transStartObj.transaction_id,
+        retries,
+        retryDelay
+      );
+    });
   }
 }
 
