@@ -1,7 +1,7 @@
 const nodeFetch = require("node-fetch");
 const { GraphQLClient, gql } = require("graphql-request");
 
-const defaultOptions = {
+const defaultConfig = {
   debug: false,
   retry: 5,
   retryDelay: 1000,
@@ -31,20 +31,32 @@ class FreepbxGqlClient {
   #oAuthClientSecret;
   #oAuthEndpoint;
   #gqlEndpoint;
-  #options;
+  #config;
   #gqlAccessToken;
   #gqlClient;
 
-  constructor(baseUrl, oAuthClientId, oAuthClientSecret, options = {}) {
-    this.#oAuthClientId = oAuthClientId;
-    this.#oAuthClientSecret = oAuthClientSecret;
+  constructor(baseUrl, config = {}) {
+    if (!config.client) {
+      throw new Error("Missing client configuration");
+    }
+
+    if (!config.client.id) {
+      throw new Error("Missing client id");
+    }
+
+    if (!config.client.secret) {
+      throw new Error("Missing client secret");
+    }
+
+    this.#oAuthClientId = config.client.id;
+    this.#oAuthClientSecret = config.client.secret;
     this.#oAuthEndpoint = getOAuthEndpoint(baseUrl);
     this.#gqlEndpoint = getGqlEndpoint(baseUrl);
-    this.#options = { ...defaultOptions, ...options };
+    this.#config = { ...defaultConfig, ...config };
   }
 
   logDebug(...args) {
-    if (this.#options.debug) {
+    if (this.#config.debug) {
       console.log(...args);
     }
   }
@@ -86,8 +98,8 @@ class FreepbxGqlClient {
   }
 
   async authenticate() {
-    const retries = this.#options.retry;
-    const retryDelay = this.#options.retryDelay;
+    const retries = this.#config.retry;
+    const retryDelay = this.#config.retryDelay;
     const authResult = await this.authenticateRequestWithRetry(
       retries,
       retryDelay
@@ -125,7 +137,8 @@ class FreepbxGqlClient {
         return this.requestWithRetry(retries - 1, retryDelay * 2, ...args);
       }
 
-      // If access denied, try to reauthenticate immediately. Do not add any delay
+      // If access denied, let's assume the access token has expired. Clear the
+      // access token and force a reauthentication. Do not add any delay
       if (retries > 0 && err.response && err.response.status === 401) {
         this.logDebug("Caught GraphQL Error, Retrying:", err);
         this.#gqlAccessToken = null;
@@ -138,8 +151,8 @@ class FreepbxGqlClient {
   }
 
   async request(...args) {
-    const retries = this.#options.retry;
-    const retryDelay = this.#options.retryDelay;
+    const retries = this.#config.retry;
+    const retryDelay = this.#config.retryDelay;
     return this.requestWithRetry(retries, retryDelay, ...args);
   }
 
@@ -169,7 +182,8 @@ class FreepbxGqlClient {
 
     const data = await this.fetchTransactionStatus(transactionId);
 
-    // If a corrupted response is received, let's just Fetch the API Status again and pretend this didn't happen
+    // If a corrupted response is received, let's just Fetch the API Status again
+    // and pretend this didn't happen
     if (!data || !data.fetchApiStatus) {
       this.logDebug("Received Invalid Response", { data });
       await delay(retryDelay);
@@ -222,7 +236,7 @@ class FreepbxGqlClient {
     query,
     variables,
     retries = 300,
-    retryDelay = 10000
+    retryDelay = 1000
   ) {
     return this.request(query, variables).then((queryResponse) => {
       const transStartObj = queryResponse[Object.keys(queryResponse)[0]];
