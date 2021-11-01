@@ -15,10 +15,20 @@ const connectionErrors = [
   "ENOTFOUND",
 ];
 
+/**
+ * Return the oAuth endpoint given the baseUrl
+ * @param  {string} baseUrl
+ * @returns {string}
+ */
 const getOAuthEndpoint = (baseUrl) => {
   return `${baseUrl}/admin/api/api/token`;
 };
 
+/**
+ * Return the GraphQL endpoint given the baseUrl
+ * @param  {string} baseUrl
+ * @returns {string}
+ */
 const getGqlEndpoint = (baseUrl) => {
   return `${baseUrl}/admin/api/api/gql`;
 };
@@ -55,12 +65,21 @@ class FreepbxGqlClient {
     this.#config = { ...defaultConfig, ...config };
   }
 
+  /**
+   * Helper function to log a debug message if debug is enabled
+   * @param  {args} ...args
+   */
   logDebug(...args) {
     if (this.#config.debug) {
       console.log(...args);
     }
   }
 
+  /**
+   * Helper function that can identify if a given error is a network error
+   * @param  {Error} err
+   * @returns {boolean}
+   */
   retryNetworkError(err) {
     if (err.code && connectionErrors.includes(err.code)) {
       return true;
@@ -73,6 +92,13 @@ class FreepbxGqlClient {
     return false;
   }
 
+  /**
+   * Helper function to send the authentication request. Typically used by
+   * the authenticate() method to handle retries.
+   * @param  {number} retries
+   * @param  {number} retryDelay
+   * @returns {Promise}
+   */
   async authenticateRequestWithRetry(retries, retryDelay) {
     const oAuthParams = new URLSearchParams();
     oAuthParams.append("grant_type", "client_credentials");
@@ -97,6 +123,10 @@ class FreepbxGqlClient {
     });
   }
 
+  /**
+   * Authenticate the client and set the access token
+   * @returns {string}
+   */
   async authenticate() {
     const retries = this.#config.retry;
     const retryDelay = this.#config.retryDelay;
@@ -113,6 +143,9 @@ class FreepbxGqlClient {
     return accessToken;
   }
 
+  /**
+   * Authenticate and Build the GraphQL client. Typically used by requestWithRetry()
+   */
   async buildClient() {
     if (this.#gqlClient) {
       return;
@@ -127,14 +160,27 @@ class FreepbxGqlClient {
     this.#gqlClient = gqlClient;
   }
 
-  async requestWithRetry(retries, retryDelay, ...args) {
+  /**
+   * Helper function to handle retry logic for request. Typicall used by request()
+   * @param  {number} retries
+   * @param  {number} retryDelay
+   * @param  {string} query the GraphQL query to execute
+   * @param  {object} variables the variables to pass to the GraphQL query
+   * @returns {Promise}
+   */
+  async requestWithRetry(retries, retryDelay, query, variables) {
     await this.buildClient();
-    return this.#gqlClient.request(...args).catch(async (err) => {
+    return this.#gqlClient.request(query, variables).catch(async (err) => {
       // retry request on network error
       if (retries > 0 && this.retryNetworkError(err)) {
         this.logDebug("Caught GraphQL Error, Retrying:", err);
         await delay(retryDelay);
-        return this.requestWithRetry(retries - 1, retryDelay * 2, ...args);
+        return this.requestWithRetry(
+          retries - 1,
+          retryDelay * 2,
+          query,
+          variables
+        );
       }
 
       // If access denied, let's assume the access token has expired. Clear the
@@ -143,19 +189,30 @@ class FreepbxGqlClient {
         this.logDebug("Caught GraphQL Error, Retrying:", err);
         this.#gqlAccessToken = null;
         this.#gqlClient = null;
-        return this.requestWithRetry(retries - 1, retryDelay, ...args);
+        return this.requestWithRetry(retries - 1, retryDelay, query, variables);
       }
 
       throw err;
     });
   }
 
-  async request(...args) {
+  /**
+   * Execute a Graphql query and return the result
+   * @param  {string} query the GraphQL query to execute
+   * @param  {object} variables the variables to pass to the GraphQL query
+   * @returns {Promise}
+   */
+  async request(query, variables) {
     const retries = this.#config.retry;
     const retryDelay = this.#config.retryDelay;
-    return this.requestWithRetry(retries, retryDelay, ...args);
+    return this.requestWithRetry(retries, retryDelay, query, variables);
   }
 
+  /**
+   * Fetch the status of a transaction give an transaction id
+   * @param  {sting} transactionId
+   * @returns {Promise}
+   */
   async fetchTransactionStatus(transactionId) {
     const query = gql`
       query FetchApiStatus($transactionId: ID!) {
@@ -173,6 +230,14 @@ class FreepbxGqlClient {
     return this.request(query, variables);
   }
 
+  /**
+   * Helper function that will wait for a transaction to complete given a transacton id
+   * @param  {sting} transactionId
+   * @param  {number} retries=300
+   * @param  {number} retryDelay=1000
+   *
+   * @returns {Promise}
+   */
   async waitForTransactionSuccess(
     transactionId,
     retries = 300,
@@ -232,6 +297,15 @@ class FreepbxGqlClient {
     throw err;
   }
 
+  /**
+   * Execute a FreePBX Transactional Graphql query, wait for the transaction to
+   * complete, and return the result
+   * @param  {string} query the GraphQL query to execute
+   * @param  {object} variables the variables to pass to the GraphQL query
+   * @param  {number} retries=300
+   * @param  {number} retryDelay=1000
+   * @returns {Promise}
+   */
   async requestTransactionAndWait(
     query,
     variables,
