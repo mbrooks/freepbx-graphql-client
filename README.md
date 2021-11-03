@@ -141,7 +141,7 @@ async function main() {
 		deploymentId: '123456789',
 	};
 
-	const result = await client.requestTransactionAndWait(query);
+	const result = await client.requestTransactionAndWait(query, variables);
 	console.log(JSON.stringify(result, undefined, 2));
 }
 
